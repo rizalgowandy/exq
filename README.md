@@ -43,8 +43,6 @@ Some OTP related documentation to look at:
 
 If you need a durable jobs, retries with exponential backoffs, dynamically scheduled jobs in the future - that are all able to survive application restarts, then an externally backed queueing library such as Exq could be a good fit.
 
-If you are starting a brand new project, I would also take a look at [Faktory](https://github.com/contribsys/faktory). It provides language independent queueing system, which means this logic doesn't have to be implemented across different languages and can use a thin client such as [faktory_worker_ex](https://github.com/cjbottaro/faktory_worker_ex).
-
 ## Getting Started
 
 ### Pre-requisite
@@ -71,7 +69,7 @@ Add `:exq` to your `mix.exs` deps (replace version with the latest hex.pm packag
 defp deps do
   [
     # ... other deps
-    {:exq, "~> 0.16.2"}
+    {:exq, "~> 0.19.0"}
   ]
 end
 ```
@@ -372,8 +370,7 @@ To unsubscribe from all queues:
 If you'd like to customize worker execution and/or create plugins like Sidekiq/Resque have, Exq supports custom middleware. The first step would be to define the middleware in ```config.exs``` and add your middleware into the chain:
 
 ```elixir
-middleware: [Exq.Middleware.Stats, Exq.Middleware.Job, Exq.Middleware.Manager,
-  Exq.Middleware.Logger]
+middleware: [Exq.Middleware.Stats, Exq.Middleware.Job, Exq.Middleware.Manager, Exq.Middleware.Unique, Exq.Middleware.Logger]
 ```
 
 You can then create a module that implements the middleware behavior and defines `before_work`,  `after_processed_work` and `after_failed_work` functions.  You can also halt execution of the chain as well. For a simple example of middleware implementation, see the [Exq Logger Middleware](https://github.com/akira/exq/blob/master/lib/exq/middleware/logger.ex).
@@ -459,13 +456,102 @@ Same node recovery is straightforward and works well if the number of worker nod
 
 Heartbeat mechanism helps in these cases. Each node registers a heartbeat at regular interval. If any node misses 5 consecutive heartbeats, it will be considered dead and all the in-progress jobs belong to that node will be re-enqueued.
 
-This feature is disabled by default and can be enabled using the following config:j
+This feature is disabled by default and can be enabled using the following config:
 
 ```elixir
 config :exq,
     heartbeat_enable: true,
     heartbeat_interval: 60_000,
     missed_heartbeats_allowed: 5
+```
+
+## Unique Jobs
+
+There are many use cases where we want to avoid duplicate jobs. Exq
+provides a few job level options to handle these cases.
+
+This feature is implemented using lock abstraction. When you enqueue a
+job for the first time, a unique lock is created. The lock token is
+derived from the job queue, class and args or from the `unique_token`
+value if provided. If you try to enqueue another job with same args
+and the lock has not expired yet, you will get back `{:conflict,
+jid}`, here jid refers the first successful job.
+
+The lock expiration is controlled by two options.
+
+* `unique_for` (seconds), controls the maximum duration a lock can be
+active. This option is mandatory to create a unique job and the lock
+never outlives the expiration duration. In cases of scheduled job, the
+expiration time is calculated as `scheduled_time + unique_for`
+
+* `unique_until` allows you to clear the lock based on job
+lifecycle. Using `:success` will clear the lock on successful
+completion of job or if the job is dead, `:start` will clear the lock
+when the job is picked for execution for the first time. `:expiry`
+specifies the lock should be cleared based on the expiration time set
+via `unique_for`.
+
+```elixir
+{:ok, jid} = Exq.enqueue(Exq, "default", MyWorker, ["arg1", "arg2"], unique_for: 60 * 60)
+{:conflict, ^jid} = Exq.enqueue(Exq, "default", MyWorker, ["arg1", "arg2"], unique_for: 60 * 60)
+```
+
+### Example usages
+
+* Idempotency - Let's say you want to send a welcome email and want to
+  make sure it's never sent more than once, even when the enqueue part
+  might get retried due to timeout etc. Use a reasonable expiration
+  duration (unique_for) that covers the retry period along with
+  `unique_until: :expiry`.
+
+* Debounce - Let's say for any change to user data, you want to sync
+  it to another system. If you just enqueue a job for each change, you
+  might end up with unnecessary duplicate sync calls. Use
+  `unique_until: :start` along with expiration time based on queue
+  load. This will make sure you never have more than one job pending
+  for a user in the queue.
+
+* Batch - Let's say you want to send a notification to user, but want
+  to wait for an hour and batch them together. Schedule a job one hour
+  in the future using `enqueue_in` and set `unique_until:
+  :success`. This will make sure no other job get enqueued till the
+  scheduled job completes successfully.
+
+Although Exq provides unique jobs feature, try to make your worker
+idempotent as much as possible. Unique jobs doesn't prevent your job
+from getting retried on failure etc. So, unique jobs is **best
+effort**, not a guarantee to avoid duplicate execution. Uniqueness
+feature depends on `Exq.Middleware.Unique` middleware. If you override
+`:middleware` configuration, make sure to include it.
+
+
+## Enqueuing Many Jobs Atomically
+
+Similar to database transactions, there are cases where you may want to
+enqueue/schedule many jobs atomically. A common usecase of this would be when you
+have a computationally heavy job and you want to break it down to multiple smaller jobs so they
+can be run concurrently. If you use a loop to enqueue/schedule these jobs,
+and a network, connectivity, or application error occurs while passing these jobs to Exq,
+you will end up in a situation where you have to roll back all the jobs that you may already
+have scheduled/enqueued which will be a complicated process. In order to avoid this problem,
+Exq comes with an `enqueue_all` method which guarantees atomicity.
+
+
+```elixir
+{:ok, [{:ok, jid_1}, {:ok, jid_2}, {:ok, jid_3}]} = Exq.enqueue_all(Exq, [
+  [job_1_queue, job_1_worker, job_1_args, job_1_options],
+  [job_2_queue, job_2_worker, job_2_args, job_2_options],
+  [job_3_queue, job_3_worker, job_3_args, job_3_options]
+])
+```
+
+`enqueue_all` also supports scheduling jobs via `schedule` key in the `options` passed for each job:
+```elixir
+{:ok, [{:ok, jid_1}, {:ok, jid_2}, {:ok, jid_3}]} = Exq.enqueue_all(Exq, [
+  [job_1_queue, job_1_worker, job_1_args, [schedule: {:in, 60 * 60}]],
+  [job_2_queue, job_2_worker, job_2_args, [schedule: {:at, midnight}]],
+  [job_3_queue, job_3_worker, job_3_args, []] # no schedule key is present, it is enqueued immediately
+])
 ```
 
 ## Web UI

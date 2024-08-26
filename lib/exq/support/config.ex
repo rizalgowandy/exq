@@ -6,6 +6,7 @@ defmodule Exq.Support.Config do
     port: 6379,
     database: 0,
     redis_options: [],
+    redis_timeout: 5000,
     namespace: "exq",
     queues: ["default"],
     json_library: Jason,
@@ -33,6 +34,7 @@ defmodule Exq.Support.Config do
       Exq.Middleware.Stats,
       Exq.Middleware.Job,
       Exq.Middleware.Manager,
+      Exq.Middleware.Unique,
       Exq.Middleware.Logger
     ],
     queue_adapter: Exq.Adapters.Queue.Redis

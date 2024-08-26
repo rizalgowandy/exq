@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [0.19.0] - 2023-07-01
+
+### Changed
+- Relax poison dependency #485 by @frahugo
+
+## [0.18.0] - 2023-06-01
+
+### Added
+- Add enqueue_all for enqueuing a batch of jobs atomically #483 by @meysius
+
+### Fixed
+- Fix namespaced keys in scripts for ACL redis #481 by @korialis
+
+## [0.17.0] - 2022-11-25
+
+### Added
+- Add Exq unique job feature, allow to enforce a single instance of job! #469 by @ananthakumaran
+
+### Fixed
+- Setup default redis timeout config #475 by @ananthakumaran
+
+### Changed
+- Use erlef/setup-beam and bump versions #476 by @kianmeng
+
 ## [0.16.2] - 2022-04-15
 
 ### Added
@@ -32,7 +56,7 @@ NOTE: Please read PR #458 for upgrade instructions.
 - Add retried_at field for Sidekiq compatibility #450 by @ananthakumaran
 - Add apis to support exq_ui #452 by @ananthakumaran
 - Add documentation about mode: :enqueuer and Exq.Enqueuer.queue_in #456 by @dbernheisel
-- Add api to immediately enqeueue jobs from retry/scheduled queue #461 by @ananthakumaran
+- Add api to immediately enqueue jobs from retry/scheduled queue #461 by @ananthakumaran
 - Add api to re-enqueue dead job #462 by @ananthakumaran
 
 ### Changed

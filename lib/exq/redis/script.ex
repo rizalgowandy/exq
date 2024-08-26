@@ -12,6 +12,84 @@ defmodule Exq.Redis.Script do
   end
 
   @scripts %{
+    enqueue:
+      Prepare.script("""
+      local queues_key, job_queue_key, unique_key = KEYS[1], KEYS[2], KEYS[3]
+      local job_queue, job, jid, unlocks_in = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
+      local unlocked = true
+      local conflict_jid = nil
+
+      if unlocks_in then
+        unlocked = redis.call("set", unique_key, jid, "px", unlocks_in, "nx")
+      end
+
+      if unlocked then
+        redis.call('SADD', queues_key, job_queue)
+        redis.call('LPUSH', job_queue_key, job)
+        return 0
+      else
+        conflict_jid = redis.call("get", unique_key)
+        return {1, conflict_jid}
+      end
+      """),
+    enqueue_at:
+      Prepare.script("""
+      local schedule_queue, unique_key = KEYS[1], KEYS[2]
+      local job, score, jid, unlocks_in = ARGV[1], tonumber(ARGV[2]), ARGV[3], tonumber(ARGV[4])
+      local unlocked = true
+      local conflict_jid = nil
+
+      if unlocks_in then
+        unlocked = redis.call("set", unique_key, jid, "px", unlocks_in, "nx")
+      end
+
+      if unlocked then
+        redis.call('ZADD', schedule_queue, score, job)
+        return 0
+      else
+        conflict_jid = redis.call("get", unique_key)
+        return {1, conflict_jid}
+      end
+      """),
+    enqueue_all:
+      Prepare.script("""
+      local schedule_queue, queues_key = KEYS[1], KEYS[2]
+      local i = 1
+      local result = {}
+
+      while i <= #(ARGV) / 5 do
+        local keys_start = i * 2
+        local args_start = (i - 1) * 5
+        local unique_key, job_queue_key = KEYS[keys_start + 1], KEYS[keys_start + 2]
+        local jid        = ARGV[args_start + 1]
+        local job_queue  = ARGV[args_start + 2]
+        local score      = tonumber(ARGV[args_start + 3])
+        local job        = ARGV[args_start + 4]
+        local unlocks_in = tonumber(ARGV[args_start + 5])
+        local unlocked   = true
+        local conflict_jid = nil
+
+        if unlocks_in then
+          unlocked = redis.call("set", unique_key, jid, "px", unlocks_in, "nx")
+        end
+
+        if unlocked and score == 0 then
+          redis.call('SADD', queues_key, job_queue)
+          redis.call('LPUSH', job_queue_key, job)
+          result[i] = {0, jid}
+        elseif unlocked then
+          redis.call('ZADD', schedule_queue, score, job)
+          result[i] = {0, jid}
+        else
+          conflict_jid = redis.call("get", unique_key)
+          result[i] = {1, conflict_jid}
+        end
+
+        i = i + 1
+      end
+
+      return result
+      """),
     scheduler_dequeue_jobs:
       Prepare.script("""
       local schedule_queue, namespace_prefix = KEYS[1], KEYS[2]
